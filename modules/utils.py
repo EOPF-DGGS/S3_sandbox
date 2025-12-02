@@ -4,6 +4,7 @@ Utility functions for working with Sentinel data.
 """
 import pystac_client
 import xarray as xr
+import pandas as pd
 
 locations = {
     "biscay":   (-4.50, 48.00),   # Bay of Biscay (France)
@@ -12,6 +13,124 @@ locations = {
     "svalbard": (15.50, 78.22),   # Svalbard (Norway)
 }
 
+def analyze_datatree_dataarrays(dt: xr.DataTree, verbose: bool = True) -> pd.DataFrame:
+    """
+    Analyze all data arrays in a datatree and return a DataFrame with their properties.
+    
+    This function traverses the datatree and collects information about each data array:
+    - Variable name
+    - Group path
+    - Whether it has lon/lat coordinates
+    - Shape
+    - Dimensions
+    
+    This helps identify which data arrays have coordinates and which need tagging,
+    and which arrays have matching shapes for coordinate copying.
+    
+    Parameters
+    ----------
+    dt : xr.DataTree
+        The datatree to analyze (can be lazily loaded)
+    verbose : bool
+        Whether to print summary information
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns:
+        - name: Variable name (e.g., 'east_west_stress_tp')
+        - path: Group path (e.g., 'conditions.meteorology')
+        - has_lonlat: Boolean indicating if lon/lat coordinates are present
+        - shape: Shape tuple as string (e.g., '(5, 1200, 130)')
+        - dimensions: Dimensions dict as string (e.g., 't_series: 5, rows: 1200, columns: 130')
+        - shape_tuple: Shape as tuple (for sorting/filtering)
+        - dims_tuple: Dimensions as tuple (for matching)
+    
+    Examples
+    --------
+    >>> dt = get_datatree("biscay", "2025-06-17")
+    >>> df = analyze_datatree_dataarrays(dt)
+    >>> # Filter arrays without lon/lat
+    >>> df_no_coords = df[~df['has_lonlat']]
+    >>> # Find arrays with matching shapes
+    >>> df_no_coords.groupby('shape_tuple').size()
+    """
+    records = []
+    
+    # Traverse all nodes in the datatree
+    for path, node in dt.subtree_with_keys:
+        # Skip if node has no dataset
+        if node.ds is None:
+            continue
+        
+        ds = node.ds
+        
+        # Check if dataset has lon/lat coordinates
+        coord_names = set(ds.coords.keys())
+        has_lat = 'latitude' in coord_names
+        has_lon = 'longitude' in coord_names
+        has_lonlat = has_lat and has_lon
+        
+        # Process each data variable (DataArray)
+        for var_name, var in ds.data_vars.items():
+            # Get shape and dimensions
+            shape = var.shape
+            dims = var.dims
+            
+            # Format path (use dot notation for readability)
+            if path:
+                path_display = path.replace('/', '.')
+            else:
+                path_display = '(root)'
+            
+            # Format shape as string
+            shape_str = str(shape)
+            
+            # Format dimensions as string (dim_name: size)
+            dims_dict = {dim: ds.sizes[dim] for dim in dims}
+            dims_str = ', '.join(f"{dim}: {size}" for dim, size in dims_dict.items())
+            
+            # Store as tuple for matching/sorting
+            shape_tuple = shape
+            dims_tuple = dims
+            
+            records.append({
+                'name': var_name,
+                'path': path_display,
+                'has_lonlat': has_lonlat,
+                'shape': shape_str,
+                'dimensions': dims_str,
+                'shape_tuple': shape_tuple,
+                'dims_tuple': dims_tuple,
+            })
+    
+    # Create DataFrame
+    df = pd.DataFrame(records)
+    
+    if verbose:
+        print("=" * 80)
+        print("DATATREE DATA ARRAYS ANALYSIS")
+        print("=" * 80)
+        print(f"\nTotal data arrays: {len(df)}")
+        print(f"  With lon/lat coordinates: {df['has_lonlat'].sum()}")
+        print(f"  Without lon/lat coordinates: {(~df['has_lonlat']).sum()}")
+        
+        # Show unique shapes for arrays without coordinates
+        df_no_coords = df[~df['has_lonlat']]
+        if len(df_no_coords) > 0:
+            print(f"\nArrays without lon/lat coordinates:")
+            print(f"  Unique shapes: {df_no_coords['shape_tuple'].nunique()}")
+            print(f"  Unique dimension patterns: {df_no_coords['dims_tuple'].nunique()}")
+            
+            # Show shape groups
+            shape_groups = df_no_coords.groupby('shape_tuple').size().sort_values(ascending=False)
+            print(f"\n  Shape distribution (top 10):")
+            for shape, count in shape_groups.head(10).items():
+                print(f"    {shape}: {count} array(s)")
+        
+        print("\n" + "=" * 80)
+    
+    return df
 
 def get_datatree(location, day, collection='sentinel-3-slstr-l1-rbt', catalog='eopf'):
     """
@@ -165,7 +284,6 @@ def parse_slstr_filename(filename, print_fields=True):
             print(f"  {key}: {value}")
     return fields
 
-
 def print_healpix_info(da: xr.DataArray):
     """
     Print information about HEALPix coordinates and metadata in a DataArray.
@@ -214,5 +332,3 @@ def print_healpix_info(da: xr.DataArray):
         print(f"\nCRS metadata:")
         for key, value in da.coords['crs'].attrs.items():
             print(f"  {key}: {value}")
-
-
